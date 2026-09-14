@@ -1,9 +1,12 @@
 """Unit tests for extraction / resolution / skip rules (no network)."""
 
 from src.check import (
+    anchor_exists,
+    classify_status,
     extract_links_from_text,
     host_is_placeholder,
     is_allowlisted,
+    is_commit_sha_fragment,
     is_dynamic_fragment,
     is_skipped_uri,
     load_allowlist,
@@ -95,3 +98,48 @@ def test_dynamic_fragments():
     assert is_dynamic_fragment("feat=cors")
     assert not is_dynamic_fragment("_declarative_security_with_spring_security")
     assert not is_dynamic_fragment("parse(java.lang.CharSequence)")
+
+
+def test_classify_status():
+    assert classify_status(200) == ("ok", "HTTP 200")
+    assert classify_status(404)[0] == "error"
+    assert classify_status(500)[0] == "error"
+    # 403/429 mean "unverifiable", not broken.
+    assert classify_status(403)[0] == "warning"
+    assert classify_status(429)[0] == "warning"
+
+
+def test_placeholder_policy_covers_doc_samples():
+    assert host_is_placeholder("http://collector:4318/v1/traces")
+    assert host_is_placeholder("https://start")  # wrapped-line artifact
+    assert host_is_placeholder("https://my-auth-server.com/oauth2/token")
+    assert host_is_placeholder("https://my-client-1.com/authorized")
+    assert host_is_placeholder("https://remoteidp2.sso.url")
+    assert host_is_placeholder("https://dev-123456.oktapreview.com/oauth2/default/")
+    assert host_is_placeholder("https://example.live.dynatrace.com/api/v2/x")
+    assert host_is_placeholder("http://xmlns.oracle.com/weblogic/weblogic-web-app")
+    assert not host_is_placeholder("https://grpc.io/docs/")
+
+
+def test_passthrough_plus_stripped():
+    assert strip_trailing_punct("https://myapp.cfapps.io+++") == "https://myapp.cfapps.io"
+    assert strip_trailing_punct("https://example.org/C++") == "https://example.org/C++"
+
+
+def test_commit_sha_fragments():
+    assert is_commit_sha_fragment("6f25b7e")
+    assert is_commit_sha_fragment("abc123def456789012345678901234567890abcd")
+    assert not is_commit_sha_fragment("_create_a_grpc_service")
+    assert not is_commit_sha_fragment("v1.0.0")
+
+
+def test_anchor_exists_without_parser_is_unverifiable():
+    import src.check as check
+
+    if check.BeautifulSoup is None:
+        assert anchor_exists("<html><body></body></html>", "x") is None
+    else:
+        html = '<html><body><h2 id="a">A</h2><h2 id="b">B</h2></body></html>'
+        assert anchor_exists(html, "a") is True
+        # Fewer than MIN_STATIC_IDS_FOR_ANCHOR_CHECK ids -> unverifiable.
+        assert anchor_exists(html, "missing") is None

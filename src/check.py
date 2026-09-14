@@ -40,12 +40,17 @@ SKIP_HOST_SUBSTRINGS = (
     "127.0.0.1",
     "0.0.0.0",
     "::1",
-    "example.com",
-    "example.org",
-    "example.net",
+    "example.",  # covers example.com/org/net + example.live.* sample envs
+    "myapp",
+    "my-auth",
+    "my-client",
+    "auth.server",
+    "oktapreview.com",
+    ".url",  # reserved-style placeholder TLDs (remoteidp1.sso.url, ...)
     ".local",
     ".invalid",
     ".test",
+    "xmlns.oracle.com",
 )
 
 # Identifiers that look like URLs but are never meant to be fetched
@@ -132,9 +137,13 @@ def load_allowlist(path: str) -> list[str]:
 
 def strip_trailing_punct(candidate: str) -> str:
     # Strip trailing punctuation that is sentence markup, not part of the URL.
-    # Keep '#', '/', '=', '&', '%', '+' which can legitimately terminate a URL.
+    # Keep '#', '/', '=', '&', '%', which can legitimately terminate a URL.
+    # Trailing '+' runs of 3+ are AsciiDoc passthrough markup.
     # Parens are balanced-aware: javadoc anchors legitimately end with ')',
     # e.g. ...#parse(java.lang.CharSequence).
+    plus_run = len(candidate) - len(candidate.rstrip("+"))
+    if plus_run >= 3:
+        candidate = candidate.rstrip("+")
     while candidate and candidate[-1] in TRAILING_PUNCT:
         if candidate[-1] == ")" and candidate.count("(") >= candidate.count(")"):
             break
@@ -178,6 +187,10 @@ def host_is_placeholder(url: str) -> bool:
     try:
         host = (urllib.parse.urlparse(url).hostname or "").lower()
     except ValueError:
+        return True
+    if not host or "." not in host:
+        # Unqualified hostnames (collector, myapp, line-wrap artifacts like
+        # a bare "https://start") never resolve publicly.
         return True
     return any(token in host for token in SKIP_HOST_SUBSTRINGS)
 
@@ -303,6 +316,35 @@ def changed_files(base_ref: str, patterns: str) -> list[str]:
     return sorted(kept)
 
 
+# Pages exposing fewer static id= anchors than this are treated as
+# JS-rendered/app-shell: a missing anchor there proves nothing, so the
+# finding becomes a warning ("unverifiable") instead of an error.
+MIN_STATIC_IDS_FOR_ANCHOR_CHECK = 30
+
+COMMIT_SHA_RE = re.compile(r"[0-9a-f]{7,40}\Z")
+
+
+def is_commit_sha_fragment(fragment: str) -> bool:
+    """Commit SHAs used as git-URL fragments (....git#6f25b7e), not anchors."""
+    return COMMIT_SHA_RE.fullmatch(fragment) is not None
+
+
+def classify_status(status: int) -> tuple[str, str]:
+    """Map an HTTP status to (kind, reason) without network access.
+
+    403 means "unverifiable" rather than broken: bot protection (Stack
+    Overflow, Slack invites, CDNs) serves 403 to scripted fetches while the
+    page is fine for humans.
+    """
+    if status == 429:
+        return ("warning", "HTTP 429 rate-limited, warn-only")
+    if status == 403:
+        return ("warning", "HTTP 403 (unverifiable, possibly bot protection)")
+    if status >= 400:
+        return ("error", f"HTTP {status}")
+    return ("ok", f"HTTP {status}")
+
+
 def check_one(url: str, timeout: float) -> Finding:
     """Fetch one URL (without fragment) and classify it."""
     finding = Finding(file="", line=0, raw=url, url=url)
@@ -322,17 +364,8 @@ def check_one(url: str, timeout: float) -> Finding:
             retry = session.get(url, timeout=timeout, allow_redirects=True)
             finding.status = retry.status_code
             finding.final_url = retry.url
-            if retry.status_code == 429:
-                finding.kind = "warning"
-                finding.reason = "HTTP 429 rate-limited, warn-only"
-                return finding
             resp = retry
-        if resp.status_code >= 400:
-            finding.kind = "error"
-            finding.reason = f"HTTP {resp.status_code}"
-            return finding
-        finding.kind = "ok"
-        finding.reason = f"HTTP {resp.status_code}"
+        finding.kind, finding.reason = classify_status(resp.status_code)
         return finding
     except requests.exceptions.TooManyRedirects:
         finding.kind = "error"
@@ -353,8 +386,14 @@ def check_one(url: str, timeout: float) -> Finding:
         return finding
 
 
-def anchor_exists(html: str, fragment: str) -> bool | None:
-    """Check whether #fragment exists in HTML. None = cannot tell (no parser)."""
+def anchor_exists(html: str, fragment: str, url: str = "") -> bool | None:
+    """Check whether #fragment exists in HTML.
+
+    Returns True (found), False (page uses static anchors but fragment is
+    missing), or None (cannot tell: no parser, or the page exposes fewer
+    than MIN_STATIC_IDS_FOR_ANCHOR_CHECK static ids, i.e. JS-rendered or a
+    bot-wall shell where a miss proves nothing).
+    """
     if BeautifulSoup is None:
         return None
     target = urllib.parse.unquote(fragment)
@@ -363,6 +402,11 @@ def anchor_exists(html: str, fragment: str) -> bool | None:
         return True
     if soup.find("a", attrs={"name": target}):
         return True
+    if "github.com" in url and soup.find(id="user-content-" + target):
+        # GitHub prefixes rendered README/blob heading ids.
+        return True
+    if len(soup.find_all(id=True)) < MIN_STATIC_IDS_FOR_ANCHOR_CHECK:
+        return None
     return False
 
 
@@ -383,7 +427,7 @@ def verify_anchor(base_result: Finding, fragment: str, timeout: float) -> Findin
             base_result.kind = "warning"
             base_result.reason += f"; anchor #{fragment} unverifiable ({ctype or 'non-HTML'})"
             return base_result
-        found = anchor_exists(resp.text, fragment)
+        found = anchor_exists(resp.text, fragment, resp.url)
         if found is True:
             base_result.reason += f"; anchor #{fragment} found"
         elif found is False:
@@ -391,7 +435,7 @@ def verify_anchor(base_result: Finding, fragment: str, timeout: float) -> Findin
             base_result.reason += f"; anchor #{fragment} MISSING"
         else:
             base_result.kind = "warning"
-            base_result.reason += "; anchor not verified (parser missing)"
+            base_result.reason += f"; anchor #{fragment} unverifiable (no static anchors on page)"
     except requests.exceptions.RequestException as exc:
         base_result.kind = "warning"
         base_result.reason += f"; anchor re-fetch failed: {str(exc)[:120]}"
@@ -455,6 +499,9 @@ def run(scope: str, base_ref: str, patterns: str, attributes: dict[str, str],
                 if is_dynamic_fragment(occ_frag):
                     f.kind = "warning"
                     f.reason += f"; dynamic fragment #{occ_frag} not verifiable, skipped"
+                elif is_commit_sha_fragment(occ_frag):
+                    f.kind = "warning"
+                    f.reason += f"; commit-like fragment #{occ_frag} not verifiable, skipped"
                 else:
                     f = verify_anchor(f, occ_frag, timeout)
                 f.file, f.line, f.raw, f.url = occ.file, occ.line, occ.raw, occ.url
