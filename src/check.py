@@ -48,7 +48,22 @@ SKIP_HOST_SUBSTRINGS = (
     ".test",
 )
 
+# Identifiers that look like URLs but are never meant to be fetched
+# (e.g. XML namespace names in sample POMs).
+SKIP_URI_SUBSTRINGS = (
+    "maven.apache.org/POM/",
+)
+
 TRAILING_PUNCT = ".,;:!?)'\""
+
+
+def is_skipped_uri(url: str) -> bool:
+    return any(token in url for token in SKIP_URI_SUBSTRINGS)
+
+
+def is_dynamic_fragment(fragment: str) -> bool:
+    """Hash-route fragments (SPA routes), not element ids: #!.., #/.., #a=b."""
+    return fragment.startswith(("!", "/")) or "=" in fragment
 
 
 @dataclass
@@ -118,8 +133,11 @@ def load_allowlist(path: str) -> list[str]:
 def strip_trailing_punct(candidate: str) -> str:
     # Strip trailing punctuation that is sentence markup, not part of the URL.
     # Keep '#', '/', '=', '&', '%', '+' which can legitimately terminate a URL.
+    # Parens are balanced-aware: javadoc anchors legitimately end with ')',
+    # e.g. ...#parse(java.lang.CharSequence).
     while candidate and candidate[-1] in TRAILING_PUNCT:
-        # Don't chop a meaningful ']' in anchors — URLs never end with these.
+        if candidate[-1] == ")" and candidate.count("(") >= candidate.count(")"):
+            break
         candidate = candidate[:-1]
     # Balance: a candidate like "(https://x)" lost '(' at start? Regex never
     # captures leading '(' except when wrapped; strip one leading '(' if the
@@ -216,7 +234,7 @@ def extract_links_from_text(
             resolved = strip_trailing_punct(resolved)
             if not resolved.startswith(("http://", "https://")):
                 continue
-            if host_is_placeholder(resolved):
+            if host_is_placeholder(resolved) or is_skipped_uri(resolved):
                 continue
             occurrences.append(Occurrence(rel_path, lineno, raw, resolved))
 
@@ -422,7 +440,11 @@ def run(scope: str, base_ref: str, patterns: str, attributes: dict[str, str],
                         status=base_result.status, kind=base_result.kind,
                         reason=base_result.reason)
             if occ_frag and f.kind == "ok":
-                f = verify_anchor(f, occ_frag, timeout)
+                if is_dynamic_fragment(occ_frag):
+                    f.kind = "warning"
+                    f.reason += f"; dynamic fragment #{occ_frag} not verifiable, skipped"
+                else:
+                    f = verify_anchor(f, occ_frag, timeout)
                 f.file, f.line, f.raw, f.url = occ.file, occ.line, occ.raw, occ.url
             if is_allowlisted(f.url, allowlist) or is_allowlisted(f.final_url, allowlist):
                 f.allowlisted = True

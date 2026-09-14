@@ -4,6 +4,8 @@ from src.check import (
     extract_links_from_text,
     host_is_placeholder,
     is_allowlisted,
+    is_dynamic_fragment,
+    is_skipped_uri,
     load_allowlist,
     resolve_attributes,
     strip_trailing_punct,
@@ -63,3 +65,25 @@ def test_placeholder_hosts():
 
 def test_resolve_attributes_none_when_missing():
     assert resolve_attributes("{nope}/x", {}) is None
+
+
+def test_balanced_parens_kept_javadoc_anchors():
+    url = "https://www.slf4j.org/apidocs/x.html#addKeyValue(java.lang.String,java.lang.Object)"
+    assert strip_trailing_punct(url) == url
+    # Unbalanced trailing paren (sentence markup) is still stripped.
+    assert strip_trailing_punct("https://example.org/y).") == "https://example.org/y"
+
+
+def test_namespace_uris_skipped():
+    assert is_skipped_uri("http://maven.apache.org/POM/4.0.0")
+    text = 'xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd"'
+    occs, _ = extract_links_from_text("pom.adoc", text, {})
+    assert [o.url for o in occs] == ["https://maven.apache.org/xsd/maven-4.0.0.xsd"]
+
+
+def test_dynamic_fragments():
+    assert is_dynamic_fragment("!language=kotlin")
+    assert is_dynamic_fragment("/nik-22-17")
+    assert is_dynamic_fragment("feat=cors")
+    assert not is_dynamic_fragment("_declarative_security_with_spring_security")
+    assert not is_dynamic_fragment("parse(java.lang.CharSequence)")
