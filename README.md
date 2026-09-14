@@ -52,8 +52,20 @@ from the BOM's minor version (`springGrpcVersion=1.1.1` → `reference/1.1`):
 - No `xref:` / `javadoc:` validation (already covered by Antora /
   `CheckJavadocMacros` in `spring-boot`).
 - Advisory only: never blocks `./gradlew check`. PR runs are
-  `continue-on-error` with a comment + artifact.
+  `continue-on-error` with annotations + summary + artifact.
 - No JS rendering, no auth-walled URLs, no auto-fix.
+
+## Known limits (by design, to stay precise)
+
+- JS-rendered / bot-walled pages expose no static anchors: missing anchors
+  there report as warnings ("unverifiable"), not errors. Strict anchor
+  errors require the page to expose 30+ static `id=` anchors.
+- `403` means "unverifiable" (warning), since bot protection serves 403 to
+  scripted fetches for pages that are fine for humans.
+- Snapshot-version doc bases (e.g. `reference/2.1` for an unreleased
+  library) 404 until published — expected, not breakage.
+- Sample/placeholder hosts (`example.*`, `my-auth-server`, single-label
+  hostnames like `collector`, XML namespaces) are never fetched.
 
 ## Layout
 
