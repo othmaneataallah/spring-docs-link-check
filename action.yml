@@ -1,0 +1,63 @@
+name: spring-docs-link-check
+description: Advisory external-link + anchor checker for Antora AsciiDoc docs
+branding:
+  icon: link
+  color: green
+inputs:
+  scope:
+    description: 'diff (changed files vs base-ref) or full (all files under paths)'
+    required: false
+    default: diff
+  base-ref:
+    description: Base ref for diff scope (e.g. origin/main)
+    required: false
+    default: origin/main
+  paths:
+    description: Glob for adoc sources, relative to the consuming checkout
+    required: false
+    default: 'documentation/**/*.adoc'
+  attributes-file:
+    description: Optional path to antora-asciidoc-attributes.properties for {url-*} resolution
+    required: false
+    default: ''
+  allowlist:
+    description: Path to allowlist file (hosts/URLs that warn instead of fail)
+    required: false
+    default: ''
+  timeout:
+    description: Per-request timeout in seconds
+    required: false
+    default: '15'
+  concurrency:
+    description: Max concurrent HTTP requests
+    required: false
+    default: '8'
+  fail-on-error:
+    description: Exit non-zero on broken links (keep false for advisory use)
+    required: false
+    default: 'false'
+outputs:
+  report-md:
+    description: Path to the Markdown report
+    value: ${{ steps.check.outputs.report-md }}
+  report-json:
+    description: Path to the JSON report
+    value: ${{ steps.check.outputs.report-json }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - id: check
+      shell: bash
+      run: |
+        python "${{ github.action_path }}/src/check.py" \
+          --scope "${{ inputs.scope }}" \
+          --base-ref "${{ inputs.base-ref }}" \
+          --paths "${{ inputs.paths }}" \
+          --attributes-file "${{ inputs.attributes-file }}" \
+          --allowlist "${{ inputs.allowlist }}" \
+          --timeout "${{ inputs.timeout }}" \
+          --concurrency "${{ inputs.concurrency }}" \
+          --fail-on-error "${{ inputs.fail-on-error }}"

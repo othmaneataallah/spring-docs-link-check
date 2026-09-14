@@ -1,0 +1,7 @@
+// Minimal repro of the spring-boot gRPC breakage shape:
+// versioned external docs base ({url-spring-grpc-docs}) + deep #anchor.
+TIP: For more details, see {url-spring-grpc-docs}/server.html#_create_a_grpc_service[the Spring gRPC documentation].
+
+For more details, please see {url-spring-grpc-docs}/server.html#_declarative_security_with_spring_security[the Spring gRPC documentation].
+
+// FIXME https://github.com/spring-projects/spring-grpc/issues/397

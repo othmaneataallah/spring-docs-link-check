@@ -1,0 +1,9 @@
+# Hosts/URL substrings that warn instead of fail (flaky, auth-walled, or
+# intentionally illustrative). One entry per line, `#` = comment.
+# V1 starter set — extended during building.
+localhost
+127.0.0.1
+example.com
+example.org
+example.net
+myapp.example.com
