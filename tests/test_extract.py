@@ -9,8 +9,10 @@ from src.check import (
     is_commit_sha_fragment,
     is_dynamic_fragment,
     is_skipped_uri,
+    is_transcript_style,
     load_allowlist,
     resolve_attributes,
+    scanned_commit,
     strip_trailing_punct,
 )
 
@@ -143,3 +145,28 @@ def test_anchor_exists_without_parser_is_unverifiable():
         assert anchor_exists(html, "a") is True
         # Fewer than MIN_STATIC_IDS_FOR_ANCHOR_CHECK ids -> unverifiable.
         assert anchor_exists(html, "missing") is None
+
+
+def test_transcript_blocks_skipped_sample_files_kept():
+    text = ("[source,shell]\n----\n$ cf apps\nhttps://dead-sample.cfapps.io/\n----\n"
+            "Prose https://grpc.io/docs/ stays.\n"
+            '[source,xml]\n----\n<url>https://repo.spring.io/snapshot</url>\n----\n'
+            '[source,subs="verbatim,quotes"]\n----\nhttps://ci-output-998877.acme-corp-test.io/x\n----\n')
+    occs, _ = extract_links_from_text("c.adoc", text, {})
+    urls = [o.url for o in occs]
+    assert "https://grpc.io/docs/" in urls
+    assert "https://repo.spring.io/snapshot" in urls
+    assert not any("cfapps" in u for u in urls)
+    assert not any("acme-corp-test" in u for u in urls)
+
+
+def test_transcript_style_detection():
+    assert is_transcript_style("shell")
+    assert is_transcript_style('subs="verbatim,quotes"')
+    assert not is_transcript_style("xml")
+    assert not is_transcript_style("yaml")
+    assert not is_transcript_style("")
+
+
+def test_scanned_commit_returns_str():
+    assert isinstance(scanned_commit(), str)

@@ -7,3 +7,6 @@ example.com
 example.org
 example.net
 myapp.example.com
+# projectlombok.org serves 404/unreachable to datacenter IPs while working
+# fine in browsers (verified manually); keep warn-only until stable.
+projectlombok.org

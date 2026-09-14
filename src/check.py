@@ -66,6 +66,20 @@ def is_skipped_uri(url: str) -> bool:
     return any(token in url for token in SKIP_URI_SUBSTRINGS)
 
 
+SOURCE_BLOCK_RE = re.compile(r"\[source(?:,(.*))?\]$")
+
+# Listing-block styles whose content is terminal transcript, not authored
+# artifacts: [source,shell] `cf apps` output, [source,subs=...] build logs.
+# Sample files ([source,xml], [source,yaml], ...) stay covered.
+TRANSCRIPT_STYLES = ("shell", "sh", "bash", "console", "text", "none",
+                     "output", "log", "plaintext")
+
+
+def is_transcript_style(style: str) -> bool:
+    first = style.split(",")[0].strip().strip("\"'").lower()
+    return first in TRANSCRIPT_STYLES or first.startswith("subs")
+
+
 def is_dynamic_fragment(fragment: str) -> bool:
     """Hash-route fragments (SPA routes), not element ids: #!.., #/.., #a=b."""
     return fragment.startswith(("!", "/")) or "=" in fragment
@@ -207,13 +221,17 @@ def extract_links_from_text(
 ) -> tuple[list[Occurrence], list[Finding]]:
     """Extract link occurrences from adoc text.
 
-    Returns (occurrences_to_check, skipped_findings). Comment lines, //// blocks
-    and unresolvable-attribute links become skipped findings (warning, not error).
+    Returns (occurrences_to_check, skipped_findings). Comment lines, ////
+    blocks, shell-transcript listing blocks and unresolvable-attribute links
+    become skipped findings (warning, not error) or are ignored.
     """
     occurrences: list[Occurrence] = []
     skipped: list[Finding] = []
     seen: set[tuple[int, str]] = set()
     in_delimited_block = False
+    in_listing_block = False
+    listing_block_is_transcript = False
+    pending_source_style = ""
 
     for lineno, line in enumerate(text.splitlines(), start=1):
         stripped = line.strip()
@@ -222,6 +240,25 @@ def extract_links_from_text(
             continue
         if in_delimited_block:
             continue
+        source_match = SOURCE_BLOCK_RE.match(stripped)
+        if source_match:
+            pending_source_style = (source_match.group(1) or "").strip().lower()
+            continue
+        if stripped == "----":
+            if not in_listing_block:
+                in_listing_block = True
+                listing_block_is_transcript = is_transcript_style(pending_source_style)
+            else:
+                in_listing_block = False
+                listing_block_is_transcript = False
+            pending_source_style = ""
+            continue
+        if in_listing_block and listing_block_is_transcript:
+            continue
+        if stripped:
+            # A source style only applies to its immediately following block
+            # (blank lines allowed); prose in between voids it.
+            pending_source_style = ""
         if line.lstrip().startswith("//"):
             continue
 
@@ -316,6 +353,11 @@ def changed_files(base_ref: str, patterns: str) -> list[str]:
     return sorted(kept)
 
 
+# Missing anchors are errors only on page families known to render anchors
+# server-side with stable id schemes. Anywhere else a miss is a warning:
+# JS apps and bot-walls make negative evidence meaningless.
+STRICT_ANCHOR_HOSTS = ("docs.spring.io", "github.com")
+
 # Pages exposing fewer static id= anchors than this are treated as
 # JS-rendered/app-shell: a missing anchor there proves nothing, so the
 # finding becomes a warning ("unverifiable") instead of an error.
@@ -389,9 +431,10 @@ def check_one(url: str, timeout: float) -> Finding:
 def anchor_exists(html: str, fragment: str, url: str = "") -> bool | None:
     """Check whether #fragment exists in HTML.
 
-    Returns True (found), False (page uses static anchors but fragment is
-    missing), or None (cannot tell: no parser, or the page exposes fewer
-    than MIN_STATIC_IDS_FOR_ANCHOR_CHECK static ids, i.e. JS-rendered or a
+    Returns True (found — always trustworthy), False (missing on a page
+    family known to render anchors server-side), or None (cannot tell:
+    no parser, non-static host family, or fewer than
+    MIN_STATIC_IDS_FOR_ANCHOR_CHECK static ids, i.e. JS-rendered or a
     bot-wall shell where a miss proves nothing).
     """
     if BeautifulSoup is None:
@@ -400,11 +443,14 @@ def anchor_exists(html: str, fragment: str, url: str = "") -> bool | None:
     soup = BeautifulSoup(html, "html.parser")
     if soup.find(id=target):
         return True
-    if soup.find("a", attrs={"name": target}):
+    if soup.find(attrs={"name": target}):
+        # e.g. <h3 name="autoScan"> on older static pages (logback manual).
         return True
     if "github.com" in url and soup.find(id="user-content-" + target):
         # GitHub prefixes rendered README/blob heading ids.
         return True
+    if not any(host in url for host in STRICT_ANCHOR_HOSTS):
+        return None
     if len(soup.find_all(id=True)) < MIN_STATIC_IDS_FOR_ANCHOR_CHECK:
         return None
     return False
@@ -435,7 +481,8 @@ def verify_anchor(base_result: Finding, fragment: str, timeout: float) -> Findin
             base_result.reason += f"; anchor #{fragment} MISSING"
         else:
             base_result.kind = "warning"
-            base_result.reason += f"; anchor #{fragment} unverifiable (no static anchors on page)"
+            base_result.reason += (f"; anchor #{fragment} unverifiable "
+                                   f"(non-static host family or few static anchors)")
     except requests.exceptions.RequestException as exc:
         base_result.kind = "warning"
         base_result.reason += f"; anchor re-fetch failed: {str(exc)[:120]}"
@@ -514,15 +561,30 @@ def run(scope: str, base_ref: str, patterns: str, attributes: dict[str, str],
     return findings
 
 
+def scanned_commit() -> str:
+    """Short HEAD of the scanned checkout (empty outside a git repo).
+
+    Recorded in every report so findings stay attributable when docs move.
+    """
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, check=True)
+        return out.stdout.strip()
+    except Exception:
+        return ""
+
+
 def write_reports(findings: list[Finding], output_dir: str) -> tuple[str, str]:
     os.makedirs(output_dir, exist_ok=True)
     json_path = os.path.join(output_dir, "report.json")
     md_path = os.path.join(output_dir, "report.md")
     errors = [f for f in findings if f.kind == "error"]
     warnings = [f for f in findings if f.kind == "warning"]
+    commit = scanned_commit()
 
     payload = {
         "summary": {
+            "commit": commit,
             "checked": len([f for f in findings if f.kind in ("ok", "error", "warning")]),
             "errors": len(errors),
             "warnings": len(warnings),
@@ -532,8 +594,12 @@ def write_reports(findings: list[Finding], output_dir: str) -> tuple[str, str]:
     with open(json_path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)
 
-    lines = ["# spring-docs-link-check report", "",
-             f"Errors: **{len(errors)}** · Warnings: {len(warnings)}", ""]
+    lines = ["# spring-docs-link-check report", ""]
+    if commit:
+        lines.append(f"Scanned commit: `{commit}`")
+        lines.append("")
+    lines.append(f"Errors: **{len(errors)}** · Warnings: {len(warnings)}")
+    lines.append("")
     if errors:
         lines.append("## Errors")
         for f in sorted(errors, key=lambda x: (x.file, x.line)):
