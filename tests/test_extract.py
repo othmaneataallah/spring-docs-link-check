@@ -67,6 +67,14 @@ def test_resolve_attributes_none_when_missing():
     assert resolve_attributes("{nope}/x", {}) is None
 
 
+def test_nested_attribute_resolution():
+    attrs = {"url-github": "https://github.com/{github-repo}",
+             "github-repo": "spring-projects/spring-boot"}
+    assert resolve_attributes("{url-github}[x]", attrs) == "https://github.com/spring-projects/spring-boot[x]"
+    # Cycle guard: never hangs, reports unresolvable.
+    assert resolve_attributes("{a}", {"a": "{b}", "b": "{a}"}) is None
+
+
 def test_balanced_parens_kept_javadoc_anchors():
     url = "https://www.slf4j.org/apidocs/x.html#addKeyValue(java.lang.String,java.lang.Object)"
     assert strip_trailing_punct(url) == url

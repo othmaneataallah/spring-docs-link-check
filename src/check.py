@@ -147,8 +147,14 @@ def strip_trailing_punct(candidate: str) -> str:
     return candidate
 
 
-def resolve_attributes(raw: str, attributes: dict[str, str]) -> str | None:
-    """Substitute {attr} tokens. Returns None if any token is unresolvable."""
+def resolve_attributes(raw: str, attributes: dict[str, str],
+                       max_passes: int = 5) -> str | None:
+    """Substitute {attr} tokens, following nested references to a fixed point.
+
+    Attribute values may themselves reference other attributes (e.g.
+    ``url-github=https://github.com/{github-repo}``). Returns None if any
+    token is unresolvable or still unresolved after max_passes (cycle guard).
+    """
 
     def repl(match: re.Match[str]) -> str:
         key = match.group(1)
@@ -157,7 +163,13 @@ def resolve_attributes(raw: str, attributes: dict[str, str]) -> str | None:
         return attributes[key]
 
     try:
-        return ATTR_TOKEN_RE.sub(repl, raw)
+        current = raw
+        for _ in range(max_passes):
+            updated = ATTR_TOKEN_RE.sub(repl, current)
+            if updated == current:
+                return updated
+            current = updated
+        return None if ATTR_TOKEN_RE.search(current) else current
     except KeyError:
         return None
 
