@@ -49,6 +49,9 @@ runs:
     - uses: actions/setup-python@v5
       with:
         python-version: '3.12'
+    - name: Install checker dependencies
+      shell: bash
+      run: pip install -r "${{ github.action_path }}/requirements.txt"
     - id: check
       shell: bash
       run: |

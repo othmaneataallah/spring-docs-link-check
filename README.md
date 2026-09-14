@@ -7,8 +7,12 @@ before they reach production.
 
 ## Status
 
-Project initiation — checker logic lands next. This commit only sets up
-structure, action interface, and docs.
+V1 implemented: extractor + `{attribute}` resolution + HTTP status +
+`#anchor` verification + advisory reports. Verified locally against
+`spring-boot` `io/grpc.adoc` (resolves the 3 `{url-spring-grpc-docs}` deep
+links; the live `reference/1.1/server.html|client.html` targets 404 as
+reported). Full network suite runs in CI (`self-check`), where `pip` is
+available.
 
 ## Non-goals (V1)
 
