@@ -474,6 +474,50 @@ def write_reports(findings: list[Finding], output_dir: str) -> tuple[str, str]:
     return md_path, json_path
 
 
+def escape_command_data(text: str) -> str:
+    return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def escape_command_prop(text: str) -> str:
+    return escape_command_data(text).replace(":", "%3A").replace(",", "%2C")
+
+
+def format_annotation(finding: Finding) -> str:
+    """Render one finding as a GitHub workflow command.
+
+    Errors map to ::error and warnings to ::warning. These only create inline
+    PR/run annotations — they never change the job outcome (exit code does).
+    """
+    level = "error" if finding.kind == "error" else "warning"
+    props = f"file={escape_command_prop(finding.file)}"
+    if finding.line:
+        props += f",line={finding.line}"
+    props += f",title={escape_command_prop('spring-docs-link-check')}"
+    message = escape_command_data(f"{finding.url} — {finding.reason}")
+    return f"::{level} {props}::{message}"
+
+
+def emit_annotations(findings: list[Finding], limit: int = 50) -> None:
+    """Print annotations for errors/warnings (stdout = workflow commands)."""
+    noteworthy = sorted(
+        (f for f in findings if f.kind in ("error", "warning")),
+        key=lambda x: (x.kind != "error", x.file, x.line),
+    )
+    for finding in noteworthy[:limit]:
+        print(format_annotation(finding))
+    if len(noteworthy) > limit:
+        print(f"::{'warning'} ::{len(noteworthy) - limit} more findings in report.json")
+
+
+def append_step_summary(md_path: str) -> None:
+    """Append the Markdown report to the run's job summary page, if present."""
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary:
+        return
+    with open(md_path, encoding="utf-8") as src, open(summary, "a", encoding="utf-8") as dst:
+        dst.write(src.read() + "\n")
+
+
 def emit_github_outputs(md_path: str, json_path: str, findings: list[Finding]) -> None:
     out = os.environ.get("GITHUB_OUTPUT")
     if not out:
@@ -503,6 +547,8 @@ def main(argv: list[str] | None = None) -> int:
                    allowlist, timeout, concurrency)
     md_path, json_path = write_reports(findings, args.output_dir)
     emit_github_outputs(md_path, json_path, findings)
+    append_step_summary(md_path)
+    emit_annotations(findings)
 
     errors = sum(1 for f in findings if f.kind == "error")
     warnings = sum(1 for f in findings if f.kind == "warning")
